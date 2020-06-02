@@ -1,0 +1,2059 @@
+---
+title: "Disaster Tweets - Part I"
+author: ''
+date: '2020-05-25'
+slug: disaster-tweets-part-i
+categories: ["R"]
+tags: ["Classification", "Lasso", "NLP", "kaggle"]
+subtitle: ''
+summary: ''
+authors: []
+lastmod: '2020-05-25T21:35:08+02:00'
+featured: yes
+image_preview: "featured.jpg"
+header: 
+  image: "featured.jpg"
+  caption: 'One of our physical challenge at the KVFD'
+projects: []
+output:
+  blogdown::html_page:
+    toc: true
+    toc_depth: 2
+    fig_caption: true
+---
+
+<script src="/rmarkdown-libs/kePrint/kePrint.js"></script>
+
+<div id="TOC">
+<ul>
+<li><a href="#introduction">Introduction</a></li>
+<li><a href="#base-line-model---lasso-model-on-just-text">Base line model - Lasso model on just text</a><ul>
+<li><a href="#creating-a-model-workflow">Creating a model workflow</a></li>
+<li><a href="#analyis-of-results">Analyis of results</a></li>
+<li><a href="#picking-the-best-model">Picking the best model</a></li>
+<li><a href="#variable-importance">variable importance</a></li>
+<li><a href="#submission-of-results">Submission of results</a></li>
+</ul></li>
+<li><a href="#baseline-with-some-additional-features">Baseline with some additional features</a><ul>
+<li><a href="#rebulding-the-data-frame-and-variables">Rebulding the data frame and variables</a></li>
+<li><a href="#creating-and-tuning-a-model">Creating and tuning a model</a></li>
+<li><a href="#variable-importances">Variable importances</a></li>
+<li><a href="#submission-of-results-1">Submission of results</a></li>
+</ul></li>
+<li><a href="#wonderings-and-lessons-learned.">Wonderings and lessons learned.</a></li>
+<li><a href="#references">References</a></li>
+</ul>
+</div>
+
+<div id="introduction" class="section level1">
+<h1>Introduction</h1>
+<p><em>Real or Not? NLP with Disaster Tweets</em> Predict which Tweets are about real disasters and which ones are not.<br />
+The task comes from a <a href="https://www.kaggle.com/c/nlp-getting-started">Kaggle competition</a> which is to detect if a tweet about an emergency disaster is real. Hence, this is a NLP classification problem.</p>
+<p>It is kind of easy for a human to see if a tweet is real or not, but it is harder for machine to detect it. For instance, the tweet <em>“look at the sky last night, it was ABLAZE”</em>. Although there is the use of a disaster keyword like “ablaze”, the use of the word in this context wasn’t meant to refer to an emergency disaster. This is seen as <em>“a getting started”</em> problem by Kaggle.</p>
+<p>Being a volunteer firefighter in my local community for the last 3 years, this Kaggle task struck a chord with me. And yes, that is me on the picture. Imagine this heavy, well insulated PPE, super intense physical challenge and then the Saudi heat with the humidity of the Red Sea ;-)</p>
+<p>I am planning on a 3 parts post.</p>
+<ul>
+<li>First part is very much BOW (bag of word) approach using Lasso.</li>
+<li>Second part is still BOW approaches using SVD. Modeling with Lasso and Xgboost.</li>
+<li>Third part is word embedding using Glove. (Still trying to make it work with Bert pre-trained models. Maybe I’ll have that sort out by the end. )</li>
+</ul>
+<p>Throughout these posts, I will use packages from 3 main sets: the <a href="https://www.tidyverse.org/">tidyverse</a> for data wrangling, the <a href="https://www.tidymodels.org/">tidymodels</a> for modeling and the <a href="https://www.tidytextmining.com/">tidytext</a> for dealing with text data. These sets of packages make a coherent whole and, in my opinion, makes it easier to learn the data analysis &amp; modeling workflow. It is, of course, not the only one. There are many other alternatives in R.</p>
+<p>Loading the libraries first.</p>
+<pre class="r"><code>library(readr)      # to read and write (import / export) any type into our R console.
+library(dplyr)      # for pretty much all our data wrangling
+library(stringr)    # to deal with strings.  this is a NLP task, so lots of it ;-) 
+library(purrr)      # to map functions over rows
+library(forcats)    # to deal with categorical variables: the fct_reorder() function
+library(stringr)    # to use str_remove() and many other regex functions later 
+library(ggplot2)    # to plot
+
+library(kableExtra) # for making pretty table on html
+
+library(rsample)    # to split df with initial_split() a
+                    # to use resampling techniques with bootstrap() and vfold_cv()
+library(parsnip)    # the main engine that run the models 
+library(workflows)  # to use workflow()
+library(tune)       # to fine tune the hyperparameters using tune()
+library(dials)      # to create grid of parameters using grid_regular(), tune_grid(), penalty()
+library(yardstick)  # to create the measure of accuracy, f1 score and ROC-AUC 
+
+library(glmnet)     # to use lasso, it is called autmoatically when calling set_engine() 
+                    # but it isn&#39;t call later on when doing using predict()
+
+library(vip)        # tidy framework to check variables importance</code></pre>
+<p>Without further adue, let’s get started by loading our training set and check its structure.</p>
+<pre class="r"><code># loading our training data  
+df_train &lt;- read_csv(&quot;~/disaster_tweets/data/train.csv&quot;) %&gt;% as_tibble()  
+
+# let&#39;s have a look at it 
+skimr::skim(df_train)</code></pre>
+<table style='width: auto;'
+        class='table table-condensed'>
+<caption>
+<span id="tab:loading-data">Table 1: </span>Data summary
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+</th>
+<th style="text-align:left;">
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Name
+</td>
+<td style="text-align:left;">
+df_train
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Number of rows
+</td>
+<td style="text-align:left;">
+7613
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Number of columns
+</td>
+<td style="text-align:left;">
+5
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+_______________________
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Column type frequency:
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+character
+</td>
+<td style="text-align:left;">
+3
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+numeric
+</td>
+<td style="text-align:left;">
+2
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+________________________
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Group variables
+</td>
+<td style="text-align:left;">
+None
+</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Variable type: character</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">
+skim_variable
+</th>
+<th style="text-align:right;">
+n_missing
+</th>
+<th style="text-align:right;">
+complete_rate
+</th>
+<th style="text-align:right;">
+min
+</th>
+<th style="text-align:right;">
+max
+</th>
+<th style="text-align:right;">
+empty
+</th>
+<th style="text-align:right;">
+n_unique
+</th>
+<th style="text-align:right;">
+whitespace
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+keyword
+</td>
+<td style="text-align:right;">
+61
+</td>
+<td style="text-align:right;">
+0.99
+</td>
+<td style="text-align:right;">
+4
+</td>
+<td style="text-align:right;">
+21
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+221
+</td>
+<td style="text-align:right;">
+0
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+location
+</td>
+<td style="text-align:right;">
+2534
+</td>
+<td style="text-align:right;">
+0.67
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+49
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+3279
+</td>
+<td style="text-align:right;">
+0
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+text
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1.00
+</td>
+<td style="text-align:right;">
+7
+</td>
+<td style="text-align:right;">
+157
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+7503
+</td>
+<td style="text-align:right;">
+0
+</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Variable type: numeric</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">
+skim_variable
+</th>
+<th style="text-align:right;">
+n_missing
+</th>
+<th style="text-align:right;">
+complete_rate
+</th>
+<th style="text-align:right;">
+mean
+</th>
+<th style="text-align:right;">
+sd
+</th>
+<th style="text-align:right;">
+p0
+</th>
+<th style="text-align:right;">
+p25
+</th>
+<th style="text-align:right;">
+p50
+</th>
+<th style="text-align:right;">
+p75
+</th>
+<th style="text-align:right;">
+p100
+</th>
+<th style="text-align:left;">
+hist
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+id
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+5441.93
+</td>
+<td style="text-align:right;">
+3137.12
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+2734
+</td>
+<td style="text-align:right;">
+5408
+</td>
+<td style="text-align:right;">
+8146
+</td>
+<td style="text-align:right;">
+10873
+</td>
+<td style="text-align:left;">
+▇▇▇▇▇
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+target
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.43
+</td>
+<td style="text-align:right;">
+0.50
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+▇▁▁▁▆
+</td>
+</tr>
+</tbody>
+</table>
+<p>At first look: 7613 observations, 5 variables (one target + 4 predictors). Many missing values for the <strong>location</strong> variable and a few missing on the <strong>keyword</strong> variable as well. The <strong>Text</strong> variable (which are the tweets themselves) has 0 missing values. Notice, we have an ID variable (don’t think that it has any use).</p>
+<p>let’s just have a look at 10 tweets and the <em>target</em> column will tell us if the tweet is being considered as one about a real emergency disaster.</p>
+<table class="table table-striped" style="width: auto !important; margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:first-ten-tweet">Table 2: </span>10 random tweets
+</caption>
+<thead>
+<tr>
+<th style="text-align:right;">
+target
+</th>
+<th style="text-align:left;">
+text
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:left;">
+First night with retainers in. It’s quite weird. Better get used to it; I have to wear them every single night for the next year at least.
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+Deputies: Man shot before Brighton home set ablaze <a href="http://t.co/gWNRhMSO8k" class="uri">http://t.co/gWNRhMSO8k</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+Man wife get six years jail for setting ablaze niece
+<a href="http://t.co/eV1ahOUCZA" class="uri">http://t.co/eV1ahOUCZA</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:left;">
+SANTA CRUZ ÛÓ Head of the St Elizabeth Police Superintendent Lanford Salmon has r … - <a href="http://t.co/vplR5Hka2u" class="uri">http://t.co/vplR5Hka2u</a> <a href="http://t.co/SxHW2TNNLf" class="uri">http://t.co/SxHW2TNNLf</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+Police: Arsonist Deliberately Set Black Church In North CarolinaåÊAblaze <a href="http://t.co/pcXarbH9An" class="uri">http://t.co/pcXarbH9An</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:left;">
+Noches El-Bestia ‘<span class="citation">@Alexis_Sanchez</span>: happy to see my teammates and training hard ?? goodnight gunners.?????? <a href="http://t.co/uc4j4jHvGR" class="uri">http://t.co/uc4j4jHvGR</a>’
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+#Kurds trampling on Turkmen flag later set it ablaze while others vandalized offices of Turkmen Front in #Diyala <a href="http://t.co/4IzFdYC3cg" class="uri">http://t.co/4IzFdYC3cg</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+TRUCK ABLAZE : R21. VOORTREKKER AVE. OUTSIDE OR TAMBO INTL. CARGO SECTION. <a href="http://t.co/8kscqKfKkF" class="uri">http://t.co/8kscqKfKkF</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:left;">
+Set our hearts ablaze and every city was a gift And every skyline was like a kiss upon the lips @Û_ <a href="https://t.co/cYoMPZ1A0Z" class="uri">https://t.co/cYoMPZ1A0Z</a>
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:left;">
+They sky was ablaze tonight in Los Angeles. I’m expecting IG and FB to be filled with sunset shots if I know my peeps!!
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+How the West was burned: Thousands of wildfires ablaze in #California alone <a href="http://t.co/iCSjGZ9tE1" class="uri">http://t.co/iCSjGZ9tE1</a> #climate #energy <a href="http://t.co/9FxmN0l0Bd" class="uri">http://t.co/9FxmN0l0Bd</a>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Because this is a classification problem, we need to make our target variable a factor.</p>
+<p>Alhtough, we will just use our train dataframe for modeling, we’ll still split it to get a testing set from it (which we will test our models on).</p>
+<pre class="r"><code># The target variable should be a factor as this is classification problem. 
+df_train &lt;- df_train %&gt;% 
+  mutate(target_bin = factor(if_else(target == 1, &quot;a_truth&quot;, &quot;b_false&quot;))) %&gt;% 
+  select(-target)
+
+# Just checking how balanced is our data.  It seems well balanced. 
+prop.table(table(df_train$target_bin))</code></pre>
+<pre><code>## 
+##   a_truth   b_false 
+## 0.4296598 0.5703402</code></pre>
+<pre class="r"><code># initial split with strata will keep the same proportion of target variable as in the original df. 
+set.seed(0109)
+rsplit_df &lt;- initial_split(df_train, strata = target_bin, prop = 0.85)
+
+# If we use cross-validation, we do not normally really need to do this. 
+# we still check our accuracy on that set of data (our unseen data) .
+df_train_tr &lt;- training(rsplit_df)
+
+# and just checking again about the ratio of target variable
+prop.table(table(df_train_tr$target_bin))   # same as original set. </code></pre>
+<pre><code>## 
+##   a_truth   b_false 
+## 0.4296972 0.5703028</code></pre>
+<pre class="r"><code>df_train_te &lt;- testing(rsplit_df)</code></pre>
+<p>The <strong>initial_split()</strong> function gives a rsplit object (rsplit_df in our case) that can be used with the training() and testing() functions to extract the data in each split. The strata argument “help ensure that the number of data points in the training data is equivalent to the proportions in the original data set.”</p>
+<p>A good thing that I notice is the data set is well-balanced-ish with a 57% - 43% in the occurrence of the outcomes (0, 1). So we won’t need to add more/remove data in our set to over-compensate. That’s one less problem that we have to deal with.</p>
+</div>
+<div id="base-line-model---lasso-model-on-just-text" class="section level1">
+<h1>Base line model - Lasso model on just text</h1>
+<p>In this post, we skip some of the usual data exploration (wordcloud are pretty, but are there really useful?) and start straight into building a model. This very first model, will be our base case. We will build a Lasso classification model based just on a cleaner version of the text of the tweets.</p>
+<p>For a Lasso modeling task, we can only use numerical values. Then we will need to normalize them. Also, we cannot include missing value. So, we remove these columns with missing values. So basically, we just use the text data as predictor. We’ll numerize that text column using the tf_idf. For more on transforming text into tf_idf, you can check <a href="https://www.tidytextmining.com/tfidf.html#the-bind_tf_idf-function">this section</a> of the David Robinson &amp; Julia Silge book on <em>Tidy Text Mining</em>. Most of the ideas here come from her book and <a href="https://juliasilge.com/">blog</a>.</p>
+<p>To clean our tweets, we will use the <strong>recipes</strong> and <strong>textrecipes</strong> packages. So, the exact same steps can later be done more easily on the testing set.</p>
+<p>In order, we’ll tokenize the tweets (at the same time, that will remove punctuations and lowercase all text), remove stop words, and keep only the first 1250 tokens. On the last step, we’ll transform our words into numerical values by transforming them to an tf_idf.</p>
+<pre class="r"><code>library(tidytext)
+library(textrecipes)
+
+recipe_tweet &lt;- recipe(formula = target_bin ~ text + id, data = df_train_tr) %&gt;% 
+  update_role(id, new_role = &quot;ID&quot;) %&gt;% 
+  step_tokenize(text) %&gt;%        # Tokenize the tweets into words
+  step_stopwords(text) %&gt;%       # Filtering off stopwords from the tokenlist variable
+  step_tokenfilter(text, max_tokens = 1250) %&gt;%  # Only keep the 1250 most important words
+  step_tfidf(text) %&gt;%           # transform each words by its tf_idf values. 
+  step_normalize(all_numeric())  # normalizing the tf_idf values</code></pre>
+<p>Once a recipe is written, we can check what it does to the original data frame by prepping and then juicing it.</p>
+<pre class="r"><code># checking on the prep() function. 
+df_train_tr_processed &lt;- recipe_tweet %&gt;% prep %&gt;% juice()
+dim(df_train_tr_processed)</code></pre>
+<pre><code>## [1] 6472 1252</code></pre>
+<p>Notice, we have now 1252 columns. The id column + the target variable + the 1250 tokens.</p>
+<div id="creating-a-model-workflow" class="section level2">
+<h2>Creating a model workflow</h2>
+<p>With the new tidymodel API, you can now create a workflow for a model, that can be reused later on.</p>
+<p>To find the most appropriate penalty for this data set, we’ll boostrap 25 samples on each penalty. We’ll do that using the <strong>rsample</strong> library.</p>
+<pre class="r"><code>library(doParallel)
+registerDoParallel(cores = 16)   #let&#39;s work on 16 cores. 
+
+# defining our model.  It is a logistic regression, using glmnet. 
+# notice that the penaly is set to tune()... We&#39;ll create a grid for that. 
+# mixture = 1, means we are dealing with LASSO. 
+model_lasso &lt;- logistic_reg(mode = &quot;classification&quot;, 
+                            penalty = tune(), mixture = 1) %&gt;% 
+  set_engine(&quot;glmnet&quot;)
+
+# if we are to tune the penalty parameters, let&#39;s create a grid of possible values
+# we &#39;ll assign 40 different values for our penalty. 
+grid_lambda &lt;- grid_regular(penalty(), levels = 40)
+
+# And we&#39;ll test each penalty value on 25 bootstrap. 
+## So that&#39;s like a 1000 models to fit.  
+folds_training &lt;- bootstraps(df_train_tr, strata = target_bin, times = 25)
+
+# starting our worflow
+wf_lasso &lt;- workflow() %&gt;% 
+  add_recipe(recipe_tweet) %&gt;% 
+  add_model(model_lasso)
+
+# the tune_grid() will fit our 1000 models using parallel processing
+# we are looking at 3 measures of validity: roc, f1 and accuracy. 
+tune_lasso &lt;- tune_grid(
+  wf_lasso, 
+  resamples = folds_training, 
+  grid = grid_lambda, 
+  metrics = metric_set(roc_auc, f_meas, accuracy), 
+  control   = control_grid(verbose = TRUE)
+)</code></pre>
+<p>I belive that the tune_grid() function is the only place in our modeling workflow where parallel processing is being used. All the other tasks are single core processing.</p>
+<p>What have we done? First, we have created a model workflow, with workflow(), using a recipe for pre-processing and a model type, logistic_reg(). Second, we fine tuned the parameters of our model. In this case, we only fine tuned the penalty parameter.</p>
+</div>
+<div id="analyis-of-results" class="section level2">
+<h2>Analyis of results</h2>
+<pre class="r"><code># we collect the results of our sample to see what penalty value we will pick. 
+metrics &lt;- tune_lasso %&gt;% collect_metrics()
+
+# save the metric for later use
+metrics %&gt;% write_csv(&quot;~/disaster_tweets/data/metrics_lasso_base.csv&quot;) 
+
+metrics %&gt;% 
+  ggplot(aes(x = penalty, y = mean, color = .metric)) + 
+  geom_line() + 
+  facet_wrap(~.metric) + 
+  scale_x_log10()</code></pre>
+<p><img src="/post/disaster-tweets-I/index_files/figure-html/checking-metrics_lasso-1.png" width="672" /></p>
+<p>Using the plots, we can see that there is only a small window of penalty values that will increase the performance of of the model. We keep that in mind for the next time we create our grid of penalties.</p>
+<p>Because our dataset is somehow balance, we could choose <strong>accuracy</strong> as a measure of model validity. The best accuracy on this base model is 76.2 % for the training set. That said because Kaggle choose F1 as a performance metric, let’s choose the penalty with highest <strong>f_meas</strong> and fit it to our testing set.</p>
+<pre class="r"><code># let check the penalties values that give the best performances
+metrics %&gt;% group_by(.metric) %&gt;% top_n(4, mean) %&gt;% arrange(.metric, desc(mean)) %&gt;% 
+  kable(&quot;html&quot;, caption = &quot;Penalties with best performances&quot;) %&gt;% 
+  kable_styling(bootstrap_options = c(&quot;striped&quot;, &quot;hoover&quot;), full_width = F, position = &quot;center&quot;) </code></pre>
+<table class="table table-striped" style="width: auto !important; margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:metric-base-model">Table 3: </span>Penalties with best performances
+</caption>
+<thead>
+<tr>
+<th style="text-align:right;">
+penalty
+</th>
+<th style="text-align:left;">
+.metric
+</th>
+<th style="text-align:left;">
+.estimator
+</th>
+<th style="text-align:right;">
+mean
+</th>
+<th style="text-align:right;">
+n
+</th>
+<th style="text-align:right;">
+std_err
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right;">
+0.0049239
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.7633420
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0012918
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0088862
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.7591922
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0012877
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0027283
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.7584935
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0011643
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0015118
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.7507548
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0013591
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0027283
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.7020865
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0017578
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0015118
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.6994592
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0017849
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0049239
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.6977248
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0019471
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0008377
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.6921877
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0022374
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0049239
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8183548
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0014059
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0088862
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8160248
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0015715
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0027283
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8128313
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0013520
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0015118
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8045593
+</td>
+<td style="text-align:right;">
+25
+</td>
+<td style="text-align:right;">
+0.0013837
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="picking-the-best-model" class="section level2">
+<h2>Picking the best model</h2>
+<p>We’ll pick the penalty that gives us the best F1 score. The finalize_workflow() functions will take the existing workflow and add to it the chosen parameters. Finally, we will save our model for later.</p>
+<pre class="r"><code>best_metric &lt;- tune_lasso %&gt;% select_best(&quot;f_meas&quot;)
+
+wf_lasso &lt;- finalize_workflow(wf_lasso, best_metric)
+
+# to summarize, this is how our workflow looked like 
+wf_lasso</code></pre>
+<pre><code>## ══ Workflow ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+## Preprocessor: Recipe
+## Model: logistic_reg()
+## 
+## ── Preprocessor ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+## 5 Recipe Steps
+## 
+## ● step_tokenize()
+## ● step_stopwords()
+## ● step_tokenfilter()
+## ● step_tfidf()
+## ● step_normalize()
+## 
+## ── Model ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+## Logistic Regression Model Specification (classification)
+## 
+## Main Arguments:
+##   penalty = 0.00272833337648676
+##   mixture = 1
+## 
+## Computational engine: glmnet</code></pre>
+<pre class="r"><code># to check our model performance on the unseen data set, we use the last_fit() 
+## Notice how the last_fit() works on the rsplit object
+last_fit(wf_lasso, rsplit_df) %&gt;% collect_metrics()</code></pre>
+<pre><code>## # A tibble: 2 x 3
+##   .metric  .estimator .estimate
+##   &lt;chr&gt;    &lt;chr&gt;          &lt;dbl&gt;
+## 1 accuracy binary         0.777
+## 2 roc_auc  binary         0.831</code></pre>
+<pre class="r"><code># got 78% accuracy on unseen data (the df_test) with 82.9% ROC. 
+
+# To save our model for later use, we first need to fit it, 
+model_lasso_base &lt;- fit(wf_lasso, df_train)
+write_rds(x = model_lasso_base, path = &quot;~/disaster_tweets/data/model_lasso_base.rds&quot;)</code></pre>
+</div>
+<div id="variable-importance" class="section level2">
+<h2>variable importance</h2>
+<p>We can also check for the important variables that determine if a tweet is about a real emergency or not.</p>
+<pre class="r"><code>read_rds(&quot;~/disaster_tweets/data/model_lasso_base.rds&quot;) %&gt;% 
+  pull_workflow_fit() %&gt;% 
+  vi(lamda = best_metric$penalty) %&gt;% 
+  group_by(Sign) %&gt;%
+  top_n(20, wt = abs(Importance)) %&gt;%
+  ungroup() %&gt;%
+  mutate(Importance = abs(Importance), 
+         Variable = str_remove(Variable, &quot;tfidf_text_&quot;), 
+         Variable = fct_reorder(Variable, Importance)) %&gt;%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Sign, scales = &quot;free_y&quot;) +
+  labs(y = NULL) </code></pre>
+<p><img src="/post/disaster-tweets-I/index_files/figure-html/checking-variable-importance-lasso-1.png" width="672" /></p>
+<p>For some reasons, I need to change the label of each graph. The “POS” terms will most likely give place to not a real emergency tweet.</p>
+<p>Although I am glad that the “lmao” expression is more often related to tweets that are not about real emergency, I am confused as to why “https” is one side and “t.co” on the other sides. They are both about links. 🤔</p>
+</div>
+<div id="submission-of-results" class="section level2">
+<h2>Submission of results</h2>
+<p>Let’s now apply our base model to our test set to create the prediction (target variable).</p>
+<pre class="r"><code>test &lt;- read_csv(&quot;~/disaster_tweets/data/test.csv&quot;)
+
+prediction_lasso_base &lt;- tibble(id = test$id,  
+                                prediction = predict(read_rds(&quot;~/disaster_tweets/data/model_lasso_base.rds&quot;), new_data = test)) %&gt;% 
+  mutate(target = if_else(prediction == &quot;a_truth&quot;, 1, 0))
+
+prediction_lasso_base %&gt;% select(id, target) %&gt;% write_csv(path = &quot;~/disaster_tweets/data/prediction_lasso_base.csv&quot;)
+# this submission gave 77.8 % on the Kaggle public score. </code></pre>
+</div>
+</div>
+<div id="baseline-with-some-additional-features" class="section level1">
+<h1>Baseline with some additional features</h1>
+<p>In this new model, we will do some feature engineering at a basic level and see if that helps to increase the model performance and especially its accuracy. We continue to use the same lasso model. That means everything has to be converted back to numerical variables.</p>
+<p>We create another version of the basic df.
+Here are the feature engineering steps we will take:</p>
+<div id="rebulding-the-data-frame-and-variables" class="section level2">
+<h2>Rebulding the data frame and variables</h2>
+<p>In the following step, there were a lots of trials and errors in regards of the order with which we were performing the changes on the tweets.</p>
+<p>We add the following variables:</p>
+<ul>
+<li>add a variable for the number of hashtag in a tweet (like #xxx)</li>
+<li>add a variable for the number of http link in a tweet (like <a href="http://xxxx" class="uri">http://xxxx</a>)</li>
+<li>add a variable for the number of mention in a tweet (like <span class="citation">@xxxx</span>)</li>
+<li>add a variable if the tweet contains a location</li>
+<li>add a variable if the tweet contains a keyword</li>
+<li>remove all mentions and links</li>
+<li>add a variable for the number of digits in a tweet</li>
+<li>add a variable for the number of character in a tweet</li>
+<li>add a variable for the number of words in a tweet</li>
+<li>remove all the numbers in tweets</li>
+</ul>
+<p>On the text itself, we perform the following steps:</p>
+<ul>
+<li>remove all digits (although I am suspecting that 4 digits date like 2015 or 2017 could have an influence)</li>
+<li>remove all mentions (who is being mentioned might add little value, we have a variable if someone is mentioned)</li>
+<li>remove all http links. The link itself is not discriminatary (does not add any information). We just recorded at the previous step if we have a link, so we can delete it</li>
+<li>lemmatize all words</li>
+<li>remove all non latin letters<br />
+</li>
+<li>count if there are multiple repeated characters in a row (like omggggg). My thinking is that real emergency tweets might use less of these.</li>
+</ul>
+<p>Because of all the cleaning, better make it a function that we can apply to both training and laster on testing set.</p>
+<pre class="r"><code>clean_tweets &lt;- function(file_path){
+  df &lt;- read_csv(file_path) %&gt;% as_tibble()  %&gt;% 
+    mutate(number_hashtag = str_count(string = text, pattern = &quot;#&quot;), 
+           number_number = str_count(string = text, pattern = &quot;[0-9]&quot;) %&gt;% as.numeric(), 
+           number_http = str_count(string = text, pattern = &quot;http&quot;) %&gt;% as.numeric(), 
+           number_mention = str_count(string = text, pattern = &quot;@&quot;) %&gt;% as.numeric(), 
+           number_location = if_else(!is.na(location), 1, 0), 
+           number_keyword = if_else(!is.na(keyword), 1, 0), 
+           number_repeated_char = str_count(string = text, pattern = &quot;([a-z])\\1{2}&quot;) %&gt;% as.numeric(),  
+           text = str_replace_all(string = text, pattern = &quot;http[^[:space:]]*&quot;, replacement = &quot;&quot;), 
+           text = str_replace_all(string = text, pattern = &quot;@[^[:space:]]*&quot;, replacement = &quot;&quot;), 
+           number_char = nchar(text),   #add the length of the tweet in character. 
+           number_word = str_count(string = text, pattern = &quot;\\w+&quot;), 
+           text = str_replace_all(string = text, pattern = &quot;[0-9]&quot;, replacement = &quot;&quot;), 
+           text = map(text, textstem::lemmatize_strings) %&gt;% unlist(.), 
+           text = map(text, function(.x) stringi::stri_trans_general(.x, &quot;Latin-ASCII&quot;)) %&gt;% unlist(.), 
+           text = str_replace_all(string = text, pattern  = &quot;\u0089&quot;, replacement = &quot;&quot;)) %&gt;% 
+  select(-keyword, -location) 
+  return(df)
+}
+
+df_train &lt;- clean_tweets(&quot;~/disaster_tweets/data/train.csv&quot;) </code></pre>
+<p>A little more checking.</p>
+<pre class="r"><code># to help me see what other changes still have to be made
+yo &lt;- df_train %&gt;% select(id, text) %&gt;% 
+  unnest_tokens(word, text) %&gt;% 
+  anti_join(stop_words %&gt;% filter(lexicon == &quot;snowball&quot;)) %&gt;% 
+  count(word) %&gt;% arrange(desc(n))
+
+# I wanted to check what are the different stop-words dictionary 
+# and see if it could make a difference. 
+yo &lt;- stop_words %&gt;% group_by(lexicon) %&gt;% summarize(n = n())
+
+# just checking if everything is as expected
+skimr::skim(df_train)</code></pre>
+<table style='width: auto;'
+        class='table table-condensed'>
+<caption>
+(#tab:skimr_lasso)Data summary
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+</th>
+<th style="text-align:left;">
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Name
+</td>
+<td style="text-align:left;">
+df_train
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Number of rows
+</td>
+<td style="text-align:left;">
+7613
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Number of columns
+</td>
+<td style="text-align:left;">
+12
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+_______________________
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Column type frequency:
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+character
+</td>
+<td style="text-align:left;">
+1
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+numeric
+</td>
+<td style="text-align:left;">
+11
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+________________________
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Group variables
+</td>
+<td style="text-align:left;">
+None
+</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Variable type: character</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">
+skim_variable
+</th>
+<th style="text-align:right;">
+n_missing
+</th>
+<th style="text-align:right;">
+complete_rate
+</th>
+<th style="text-align:right;">
+min
+</th>
+<th style="text-align:right;">
+max
+</th>
+<th style="text-align:right;">
+empty
+</th>
+<th style="text-align:right;">
+n_unique
+</th>
+<th style="text-align:right;">
+whitespace
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+text
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+4
+</td>
+<td style="text-align:right;">
+157
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+6890
+</td>
+<td style="text-align:right;">
+0
+</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Variable type: numeric</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">
+skim_variable
+</th>
+<th style="text-align:right;">
+n_missing
+</th>
+<th style="text-align:right;">
+complete_rate
+</th>
+<th style="text-align:right;">
+mean
+</th>
+<th style="text-align:right;">
+sd
+</th>
+<th style="text-align:right;">
+p0
+</th>
+<th style="text-align:right;">
+p25
+</th>
+<th style="text-align:right;">
+p50
+</th>
+<th style="text-align:right;">
+p75
+</th>
+<th style="text-align:right;">
+p100
+</th>
+<th style="text-align:left;">
+hist
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+id
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+5441.93
+</td>
+<td style="text-align:right;">
+3137.12
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+2734
+</td>
+<td style="text-align:right;">
+5408
+</td>
+<td style="text-align:right;">
+8146
+</td>
+<td style="text-align:right;">
+10873
+</td>
+<td style="text-align:left;">
+▇▇▇▇▇
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+target
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.43
+</td>
+<td style="text-align:right;">
+0.50
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+▇▁▁▁▆
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_hashtag
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.45
+</td>
+<td style="text-align:right;">
+1.10
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+13
+</td>
+<td style="text-align:left;">
+▇▁▁▁▁
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_number
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+2.04
+</td>
+<td style="text-align:right;">
+3.01
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+3
+</td>
+<td style="text-align:right;">
+39
+</td>
+<td style="text-align:left;">
+▇▁▁▁▁
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_http
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.62
+</td>
+<td style="text-align:right;">
+0.66
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+4
+</td>
+<td style="text-align:left;">
+▇▇▂▁▁
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_mention
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.36
+</td>
+<td style="text-align:right;">
+0.72
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+8
+</td>
+<td style="text-align:left;">
+▇▁▁▁▁
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_location
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.67
+</td>
+<td style="text-align:right;">
+0.47
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+▃▁▁▁▇
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_keyword
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.99
+</td>
+<td style="text-align:right;">
+0.09
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:left;">
+▁▁▁▁▇
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_repeated_char
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+0.02
+</td>
+<td style="text-align:right;">
+0.17
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+5
+</td>
+<td style="text-align:left;">
+▇▁▁▁▁
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_char
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+83.20
+</td>
+<td style="text-align:right;">
+32.32
+</td>
+<td style="text-align:right;">
+5
+</td>
+<td style="text-align:right;">
+59
+</td>
+<td style="text-align:right;">
+84
+</td>
+<td style="text-align:right;">
+112
+</td>
+<td style="text-align:right;">
+157
+</td>
+<td style="text-align:left;">
+▂▆▇▇▂
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+number_word
+</td>
+<td style="text-align:right;">
+0
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+14.24
+</td>
+<td style="text-align:right;">
+6.11
+</td>
+<td style="text-align:right;">
+1
+</td>
+<td style="text-align:right;">
+10
+</td>
+<td style="text-align:right;">
+14
+</td>
+<td style="text-align:right;">
+18
+</td>
+<td style="text-align:right;">
+34
+</td>
+<td style="text-align:left;">
+▃▇▆▃▁
+</td>
+</tr>
+</tbody>
+</table>
+<p>Checking on the tweets, I can see that some digits are left. I am not sure how that happened (any suggestion welcome!)</p>
+<p>Also, I notice that there are around 2000 words with n &gt;= 6.</p>
+<p>Some tweets are in the dataset more than once, but … they do not have the same target value. Yes, that’s weird and it is due to bad encoding. So we’ll use a voting sytem, to make them equal.</p>
+<pre class="r"><code>yo &lt;- df_train %&gt;% group_by(text) %&gt;% 
+  mutate(mean_target = mean(target), 
+         new_target = if_else(mean_target &gt; 0.5, 1, 0)) 
+
+df_train &lt;- yo %&gt;% 
+  mutate(target = new_target, 
+         target_bin = factor(if_else(target == 1, &quot;a_truth&quot;, &quot;b_false&quot;))) %&gt;% 
+  select(-new_target, -mean_target, -target)</code></pre>
+<p>Now, we start our modeling workflow.</p>
+</div>
+<div id="creating-and-tuning-a-model" class="section level2">
+<h2>Creating and tuning a model</h2>
+<p>There are 2 things we’d like to try in this step. Would lemmatize or stemming work better? We’ll try both, but keep the one with best result. Also we try to see if doing a dimensionality reductions with PCA would help.</p>
+<p>Also because we use tf_idf, should we normalize? Does this step add anything on our model?</p>
+<pre class="r"><code>recipe_tweet &lt;- recipe(formula = target_bin ~ ., data = df_train) %&gt;% 
+  update_role(id, new_role = &quot;ID&quot;) %&gt;% 
+  step_normalize(contains(&quot;number&quot;), -id) %&gt;% 
+  step_tokenize(text) %&gt;%        
+  step_stopwords(text, stopword_source = &quot;snowball&quot;) %&gt;%  
+  step_tokenfilter(text, max_tokens = 2500) %&gt;%  
+  step_tfidf(text) %&gt;%    
+  step_pca(contains(&quot;tfidf&quot;), threshold = 0.95)
+
+# to check how our df is now looking as it has been pre-processed. 
+#df_train_processed &lt;- recipe_tweet %&gt;% prep() %&gt;% juice()
+#dim(df_train_processed)
+
+registerDoParallel(cores = 16)
+
+# we &#39;ll assign 40 different values for our penalty. 
+# we noticed earlier that best values are between penalties 0.001 and 0.005
+grid_lambda &lt;- expand.grid(penalty = seq(0.0017,0.005, length = 40)) 
+
+# This time we&#39;ll use 10 folds cross-validation
+set.seed(0109)
+folds_training &lt;- vfold_cv(df_train, v = 10, repeats = 2) 
+
+model_lasso &lt;- logistic_reg(mode = &quot;classification&quot;, 
+                            penalty = tune(), mixture = 1) %&gt;% 
+  set_engine(&quot;glmnet&quot;) 
+
+# starting our worflow
+wf_lasso &lt;- workflow() %&gt;% 
+  add_recipe(recipe_tweet) %&gt;% 
+  add_model(model_lasso) 
+
+# run a lasso regression with bootstrap, on 40 different levels of penalty
+tune_lasso &lt;- tune_grid(
+  wf_lasso, 
+  resamples = folds_training, 
+  grid = grid_lambda, 
+  metrics = metric_set(roc_auc, f_meas, accuracy), 
+  control = control_grid(verbose = TRUE)
+) 
+
+tune_lasso %&gt;% collect_metrics() %&gt;% 
+  write_csv(&quot;~/disaster_tweets/data/metrics_lasso_enhanced.csv&quot;) 
+
+tune_lasso %&gt;% collect_metrics() %&gt;% 
+  group_by(.metric) %&gt;% top_n(4, mean) %&gt;% arrange(.metric, desc(mean)) %&gt;% 
+  kable() %&gt;% 
+  kable_styling(bootstrap_options = c(&quot;striped&quot;, &quot;hoover&quot;), full_width = F, position = &quot;center&quot;) </code></pre>
+<table class="table table-striped" style="width: auto !important; margin-left: auto; margin-right: auto;">
+<thead>
+<tr>
+<th style="text-align:right;">
+penalty
+</th>
+<th style="text-align:left;">
+.metric
+</th>
+<th style="text-align:left;">
+.estimator
+</th>
+<th style="text-align:right;">
+mean
+</th>
+<th style="text-align:right;">
+n
+</th>
+<th style="text-align:right;">
+std_err
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right;">
+0.0028000
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8003415
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0036401
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0028846
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8001444
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0038903
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0032231
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8001444
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0037499
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0031385
+</td>
+<td style="text-align:left;">
+accuracy
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8000787
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0037480
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0048308
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8343883
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0030775
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0049154
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8340468
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0030167
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0050000
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8340169
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0030807
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0032231
+</td>
+<td style="text-align:left;">
+f_meas
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8338193
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0031357
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0035615
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8588161
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0030108
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0036462
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8588096
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0030060
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0037308
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8588078
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0029970
+</td>
+</tr>
+<tr>
+<td style="text-align:right;">
+0.0038154
+</td>
+<td style="text-align:left;">
+roc_auc
+</td>
+<td style="text-align:left;">
+binary
+</td>
+<td style="text-align:right;">
+0.8588028
+</td>
+<td style="text-align:right;">
+20
+</td>
+<td style="text-align:right;">
+0.0029785
+</td>
+</tr>
+</tbody>
+</table>
+<p>Note1: the transformed df after the recipes steps is 7613 x 1237, that is with 1750 maxtokens and pca on 95% variance. Also we only do PCA on the words (not the extra variable) accuracy = 79.8 and f1 = 74.6.</p>
+<p>Note2: And with 2000 maxtokens, 95% threshold on pca, no nomralization we got 79.8% accuracy and f1 = 74.9. df is 7613 x 1369.</p>
+<p>Note3: And with 1750 maxtokens, no pca, we got 79.9% accuracy ad f1 = 74.2.</p>
+<p>Note4: And with 2500 maxtokens, 95% threshold on pca, no nomralization we got 80.0% accuracy and f1 = 74.98. df is 7613 x 1630. And we get the exact same results if we use normalization.</p>
+<p>All this fine tuning gave us a very small increase in both accuracy and F1 scores. There is also an increase in ROC-AUC. Considering these are the performances on the trained data, and considering the leakage due to normalization, pca and tf-idf, these might be optimist results. Let’s see.</p>
+<pre class="r"><code>best_metric &lt;- tune_lasso %&gt;% select_best(&quot;f_meas&quot;)
+
+wf_lasso &lt;- finalize_workflow(wf_lasso, best_metric)
+
+wf_lasso</code></pre>
+<pre><code>## ══ Workflow ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+## Preprocessor: Recipe
+## Model: logistic_reg()
+## 
+## ── Preprocessor ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+## 6 Recipe Steps
+## 
+## ● step_normalize()
+## ● step_tokenize()
+## ● step_stopwords()
+## ● step_tokenfilter()
+## ● step_tfidf()
+## ● step_pca()
+## 
+## ── Model ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+## Logistic Regression Model Specification (classification)
+## 
+## Main Arguments:
+##   penalty = 0.00483076923076923
+##   mixture = 1
+## 
+## Computational engine: glmnet</code></pre>
+<pre class="r"><code>#save the final lasso model
+fit(wf_lasso, df_train) %&gt;% write_rds(path = &quot;~/disaster_tweets/data/model_lasso_enhanced.rds&quot;) </code></pre>
+</div>
+<div id="variable-importances" class="section level2">
+<h2>Variable importances</h2>
+<pre class="r"><code>library(vip)
+
+read_rds(&quot;~/disaster_tweets/data/model_lasso_enhanced.rds&quot;) %&gt;% pull_workflow_fit() %&gt;% 
+  vi(lambda = best_metric$penalty) %&gt;% 
+  group_by(Sign) %&gt;%
+  top_n(20, wt = abs(Importance)) %&gt;%
+  ungroup() %&gt;%
+  mutate(Importance = abs(Importance), 
+         #Variable = str_remove(Variable, &quot;tfidf_text_&quot;), 
+         Variable = fct_reorder(Variable, Importance)) %&gt;%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Sign, scales = &quot;free_y&quot;) +
+  labs(y = NULL, x = &quot;Sign&quot;)  </code></pre>
+<div class="figure"><span id="fig:vip-lasso-enhanced"></span>
+<img src="/post/disaster-tweets-I/index_files/figure-html/vip-lasso-enhanced-1.png" alt="Most important variables." width="672" />
+<p class="caption">
+Figure 1: Most important variables.
+</p>
+</div>
+<p>One thing worth noticing is that not many of our feature engineering made it to the top 20 of important variables.<br />
+What about all our fancy extra variables like number of character? number of http link? Number of # and @?<br />
+Well …</p>
+<pre class="r"><code>read_rds(&quot;~/disaster_tweets/data/model_lasso_enhanced.rds&quot;) %&gt;% pull_workflow_fit() %&gt;% 
+  vi(lambda = best_metric$penalty) %&gt;% 
+  filter(str_detect(Variable, pattern = &quot;number&quot;)) %&gt;% 
+  arrange(desc(Importance))</code></pre>
+<pre><code>## # A tibble: 9 x 3
+##   Variable             Importance Sign 
+##   &lt;chr&gt;                     &lt;dbl&gt; &lt;chr&gt;
+## 1 number_char              0.941  POS  
+## 2 number_http              0.376  POS  
+## 3 number_number            0.102  POS  
+## 4 number_mention           0.0639 POS  
+## 5 number_hashtag           0.0358 POS  
+## 6 number_location         -0.0122 NEG  
+## 7 number_keyword          -0.0584 NEG  
+## 8 number_repeated_char    -0.0912 NEG  
+## 9 number_word             -0.310  NEG</code></pre>
+<p>Ugh! They are not looking that important! That’s pretty sad, I though I was becoming THE feature engineer guy of NLP. Nope! just humble pie instead…</p>
+</div>
+<div id="submission-of-results-1" class="section level2">
+<h2>Submission of results</h2>
+<p>Applying the model on the test data. We first need to reprocessed the data.</p>
+<pre class="r"><code>test &lt;- clean_tweets(&quot;~/disaster_tweets/data/test.csv&quot;) 
+
+model_lasso_enhanced &lt;- read_rds(&quot;~/disaster_tweets/data/model_lasso_enhanced.rds&quot;)
+
+library(glmnet)
+
+prediction_lasso_enhanced &lt;- tibble(id = test$id, 
+                                    prediction = predict(model_lasso_enhanced, new_data = test)) %&gt;% 
+  mutate(target = if_else(prediction == &quot;a_truth&quot;, 1, 0))
+
+write_csv(prediction_lasso_enhanced %&gt;% select(id, target), path = &quot;~/disaster_tweets/data/prediction_lasso_enhanced.csv&quot;)
+
+rm(list = ls())</code></pre>
+<p>Note 1: maxtokens - 1750, 95% threshold for PCA, I got 76.8% public score.</p>
+<p>Note 2: with maxtoken = 2000 and 95% treshold for PCA, I got actually a worst accuracy score.</p>
+<p>Note 3: majority voting, maxtokens = 1750 and NO PCA, result with 78.7%.</p>
+<p>Note 4: majority voting, maxtokens = 2500, pca at 95% (df is 1630 wide), results with 78.3% (exact same results with normalization).</p>
+<p>Note 5: majority voting, maxtokens = 4000, pca at 90%. Got 78.3% public score.</p>
+<p>Yep! That second attempt at features engeneering is just a little success. It only added 1% accuracy in the submission. It took a lot of work to make it happen but brought not much increase in F1 score. It’s part of the game!</p>
+<p>We need to use another method to numerize our tweets. This is what we’ll do in Part II and III as we consider SVD and word-embedding.</p>
+<p>I am looking forward for comments / feedback.</p>
+</div>
+</div>
+<div id="wonderings-and-lessons-learned." class="section level1">
+<h1>Wonderings and lessons learned.</h1>
+<p>There are a few things I still wonder how to improve in the modelling workflow:</p>
+<ul>
+<li>the relationship between tf_idf and max-tokens in recipe. It seemed that increasing the max_tokens before the tf_idf step didn’t add much values. I am wondering until what point that is the case</li>
+<li>can we parallelize the map functions from the purrr package? It takes quite a bit of times for instance to do lemmatize each tweets using map(text, textstemm::lemmatize()). I do think that might be possible.</li>
+<li>can we parallelize the recipe() %&gt;% prep() %&gt;% juice()? I also find that steps very slow. I do not think that it is possible. The only reason I like to run that line is to check that the recipe steps are doing what I intended them to do</li>
+</ul>
+<p>Any feedback/advises on the 2 things above are really welcome ;-)</p>
+<p>Lessons learned:</p>
+<ul>
+<li>the easiest model in the second lasso was the best. All the other fanciers, more computationally intensed attempts didn’t provide better results.</li>
+<li>normalization has been recommended on Lasso models. In our case, normalizing after the tf_idf step or after the pca didn’t change much to our model. So in regards to being parsimonious, I would say I can skip these steps in the future.</li>
+</ul>
+</div>
+<div id="references" class="section level1">
+<h1>References</h1>
+<p>I have copied ideas from several Kaggle notebooks and blogs.</p>
+<ul>
+<li>Extensive use of the <strong>textrecipes</strong> library. Go check his posts on <a href="https://www.hvitfeldt.me/post/">his blog</a></li>
+<li>To get ideas on how to use Lasso modeling on a NLP task using the tidymodel framework. Julia Silge blog: <a href="https://juliasilge.com/blog/animal-crossing/">Sentiment analysis with tidymodels and #TidyTuesday Animal Crossing reviews</a></li>
+<li>To get ideas to feature engineer the original tweets<a href="https://www.kaggle.com/barun2104/nlp-with-disaster-eda-dfm-svd-ensemble">NLP with Disaster - EDA | DFM | SVD | Ensemble</a></li>
+</ul>
+</div>
